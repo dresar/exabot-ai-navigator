@@ -1,68 +1,27 @@
+import { useCallback, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { formatDistanceToNow, parseISO } from "date-fns";
+import { id as idLocale } from "date-fns/locale";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { RefreshCw, Filter, Zap, TrendingUp, TrendingDown, Clock, CheckCircle2, ArrowUpRight, BarChart2 } from "lucide-react";
-import { useState } from "react";
+import { apiFetch } from "@/lib/api";
+import { useExabotWebSocketChannel } from "@/hooks/useExabotWebSocket";
+import { toNum } from "@/lib/format";
 
-const predictions = [
-  {
-    id: 1,
-    event: "Bitcoin melewati $120k sebelum Juni 2025",
-    aiProb: 34, marketProb: 45, confidence: 78, status: "pending",
-    kategori: "Kripto", lastUpdate: "2 menit lalu", volume: "8.4M",
-  },
-  {
-    id: 2,
-    event: "Fed menurunkan suku bunga di Q2 2025",
-    aiProb: 82, marketProb: 75, confidence: 91, status: "pending",
-    kategori: "Ekonomi", lastUpdate: "5 menit lalu", volume: "12.1M",
-  },
-  {
-    id: 3,
-    event: "Tesla mencapai $400 per saham Q3 2025",
-    aiProb: 28, marketProb: 32, confidence: 65, status: "pending",
-    kategori: "Saham", lastUpdate: "8 menit lalu", volume: "4.2M",
-  },
-  {
-    id: 4,
-    event: "Indonesia GDP growth > 5.5% di 2025",
-    aiProb: 67, marketProb: 55, confidence: 84, status: "selesai",
-    kategori: "Ekonomi", lastUpdate: "1 jam lalu", volume: "2.1M",
-  },
-  {
-    id: 5,
-    event: "Apple merilis AR Glasses 2025",
-    aiProb: 55, marketProb: 48, confidence: 72, status: "pending",
-    kategori: "Teknologi", lastUpdate: "12 menit lalu", volume: "5.8M",
-  },
-  {
-    id: 6,
-    event: "Harga emas melampaui $2.800/oz",
-    aiProb: 88, marketProb: 79, confidence: 93, status: "selesai",
-    kategori: "Komoditas", lastUpdate: "30 menit lalu", volume: "9.3M",
-  },
-  {
-    id: 7,
-    event: "Pemilu Presiden Indonesia 2029 - PDI-P menang",
-    aiProb: 43, marketProb: 38, confidence: 61, status: "pending",
-    kategori: "Politik", lastUpdate: "45 menit lalu", volume: "1.7M",
-  },
-  {
-    id: 8,
-    event: "OpenAI merilis GPT-5 sebelum Juli 2025",
-    aiProb: 71, marketProb: 64, confidence: 80, status: "pending",
-    kategori: "Teknologi", lastUpdate: "3 menit lalu", volume: "7.6M",
-  },
-  {
-    id: 9,
-    event: "SpaceX berhasil landing di Mars",
-    aiProb: 12, marketProb: 18, confidence: 55, status: "pending",
-    kategori: "Sains", lastUpdate: "1 jam lalu", volume: "3.2M",
-  },
-];
-
-const categories = ["Semua", "Kripto", "Ekonomi", "Saham", "Teknologi", "Komoditas", "Politik", "Sains"];
+type LivePred = {
+  id: string;
+  event_id: string;
+  event_name?: string | null;
+  category?: string | null;
+  ai_probability: string | number;
+  market_probability: string | number;
+  confidence: string | number;
+  status: string;
+  created_at: string;
+};
 
 const categoryColors: Record<string, string> = {
   Kripto: "bg-orange-500/10 text-orange-400 border-orange-500/20",
@@ -76,19 +35,48 @@ const categoryColors: Record<string, string> = {
 
 export default function PrediksiLangsung() {
   const [activeCategory, setActiveCategory] = useState("Semua");
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const qc = useQueryClient();
 
-  const filtered = activeCategory === "Semua" ? predictions : predictions.filter(p => p.kategori === activeCategory);
+  const onWs = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ["predictions", "live"] });
+  }, [qc]);
+  useExabotWebSocketChannel("predictions", onWs);
 
-  const handleRefresh = () => {
-    setIsRefreshing(true);
-    setTimeout(() => setIsRefreshing(false), 1500);
-  };
+  const categoriesQ = useQuery({
+    queryKey: ["markets", "categories"],
+    queryFn: () => apiFetch<{ items: string[] }>("/markets/categories"),
+    staleTime: 120_000,
+  });
+
+  const liveQ = useQuery({
+    queryKey: ["predictions", "live"],
+    queryFn: () => apiFetch<LivePred[]>("/predictions/live"),
+    refetchInterval: 15_000,
+  });
+
+  const categoryTabs = useMemo(() => {
+    const fromApi = categoriesQ.data?.items ?? [];
+    const fromLive = new Set<string>();
+    for (const p of liveQ.data ?? []) {
+      const c = p.category?.trim();
+      if (c) fromLive.add(c);
+    }
+    const merged = new Set<string>([...fromApi, ...fromLive]);
+    const sorted = Array.from(merged).sort((a, b) => a.localeCompare(b, "id"));
+    return ["Semua", ...sorted];
+  }, [categoriesQ.data?.items, liveQ.data]);
+
+  const filtered = useMemo(() => {
+    const rows = liveQ.data ?? [];
+    if (activeCategory === "Semua") return rows;
+    return rows.filter((p) => (p.category ?? "").toLowerCase() === activeCategory.toLowerCase());
+  }, [liveQ.data, activeCategory]);
+
+  const handleRefresh = () => liveQ.refetch();
 
   return (
     <DashboardLayout>
       <div className="space-y-6 animate-fade-in">
-        {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2.5 mb-1">
@@ -99,26 +87,29 @@ export default function PrediksiLangsung() {
               </div>
             </div>
             <p className="text-sm text-muted-foreground">
-              {filtered.length} prediksi aktif · Diperbarui secara real-time
+              {filtered.length} prediksi pending · Polling 15s + WebSocket
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" className="gap-1.5 text-xs">
+            <Button variant="outline" size="sm" className="gap-1.5 text-xs" type="button">
               <Filter className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Filter</span>
             </Button>
-            <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={handleRefresh}>
-              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+            <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={handleRefresh} type="button">
+              <RefreshCw className={`w-3.5 h-3.5 ${liveQ.isFetching ? "animate-spin" : ""}`} />
               <span className="hidden sm:inline">Refresh</span>
             </Button>
           </div>
         </div>
 
-        {/* Category Filter */}
         <div className="flex gap-2 flex-wrap">
-          {categories.map((cat) => (
+          {categoriesQ.isError && (
+            <p className="text-xs text-destructive w-full">Gagal memuat kategori pasar — tab menyertakan hanya kategori dari data live.</p>
+          )}
+          {categoryTabs.map((cat) => (
             <button
               key={cat}
+              type="button"
               onClick={() => setActiveCategory(cat)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 border ${
                 activeCategory === cat
@@ -131,11 +122,26 @@ export default function PrediksiLangsung() {
           ))}
         </div>
 
-        {/* Cards Grid */}
+        {liveQ.isLoading && (
+          <p className="text-sm text-muted-foreground">Memuat prediksi live…</p>
+        )}
+        {liveQ.isError && <p className="text-sm text-destructive">Gagal memuat /predictions/live</p>}
+
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {filtered.map((p, idx) => {
-            const diff = p.aiProb - p.marketProb;
+            const aiProb = toNum(p.ai_probability);
+            const marketProb = toNum(p.market_probability);
+            const conf = toNum(p.confidence);
+            const diff = aiProb - marketProb;
             const signal = diff > 8 ? "positive" : diff < -8 ? "negative" : "neutral";
+            const cat = p.category ?? "Umum";
+            const title = p.event_name ?? p.event_id;
+            let lastUpdate = "—";
+            try {
+              lastUpdate = formatDistanceToNow(parseISO(p.created_at), { addSuffix: true, locale: idLocale });
+            } catch {
+              /* ignore */
+            }
 
             return (
               <div
@@ -143,81 +149,109 @@ export default function PrediksiLangsung() {
                 className="glass-card p-5 hover:scale-[1.01] transition-all duration-200 cursor-pointer group space-y-4 animate-fade-in"
                 style={{ animationDelay: `${idx * 60}ms` }}
               >
-                {/* Top row */}
                 <div className="flex items-start justify-between gap-2">
                   <div className="space-y-1.5 flex-1 min-w-0">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${categoryColors[p.kategori] || "bg-secondary text-muted-foreground border-border"}`}>
-                      {p.kategori}
+                    <span
+                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                        categoryColors[cat] || "bg-secondary text-muted-foreground border-border"
+                      }`}
+                    >
+                      {cat}
                     </span>
-                    <h3 className="font-semibold text-sm leading-snug">{p.event}</h3>
+                    <h3 className="font-semibold text-sm leading-snug">{title}</h3>
                   </div>
                   <Badge
                     variant="secondary"
                     className={`shrink-0 text-[10px] flex items-center gap-1 ${
-                      p.status === "selesai"
-                        ? "bg-secondary text-muted-foreground"
-                        : "bg-blue-500/10 text-blue-400 border-blue-500/20 border"
+                      p.status === "pending"
+                        ? "bg-blue-500/10 text-blue-400 border-blue-500/20 border"
+                        : "bg-secondary text-muted-foreground"
                     }`}
                   >
-                    {p.status === "pending"
-                      ? <><span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />Aktif</>
-                      : <><CheckCircle2 className="w-2.5 h-2.5" />Selesai</>
-                    }
+                    {p.status === "pending" ? (
+                      <>
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                        Aktif
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-2.5 h-2.5" />
+                        Selesai
+                      </>
+                    )}
                   </Badge>
                 </div>
 
-                {/* Probability grid */}
                 <div className="grid grid-cols-2 gap-2.5">
                   <div className="p-3 rounded-xl bg-primary/8 border border-primary/15 text-center">
                     <p className="text-[10px] font-medium text-muted-foreground mb-0.5">EXABOT AI</p>
-                    <p className="text-2xl font-bold text-primary leading-none">{p.aiProb}%</p>
+                    <p className="text-2xl font-bold text-primary leading-none">{aiProb.toFixed(0)}%</p>
                     <p className="text-[10px] text-muted-foreground mt-0.5">probabilitas YES</p>
                   </div>
                   <div className="p-3 rounded-xl bg-secondary border border-border/50 text-center">
                     <p className="text-[10px] font-medium text-muted-foreground mb-0.5">MARKET</p>
-                    <p className="text-2xl font-bold leading-none">{p.marketProb}%</p>
+                    <p className="text-2xl font-bold leading-none">{marketProb.toFixed(0)}%</p>
                     <p className="text-[10px] text-muted-foreground mt-0.5">probabilitas YES</p>
                   </div>
                 </div>
 
-                {/* Confidence bar */}
                 <div>
                   <div className="flex justify-between text-xs mb-1.5">
                     <span className="text-muted-foreground font-medium">Confidence AI</span>
-                    <span className={`font-semibold ${p.confidence >= 85 ? "text-success" : p.confidence >= 70 ? "text-warning" : "text-destructive"}`}>
-                      {p.confidence}%
+                    <span
+                      className={`font-semibold ${
+                        conf >= 85 ? "text-success" : conf >= 70 ? "text-warning" : "text-destructive"
+                      }`}
+                    >
+                      {conf.toFixed(0)}%
                     </span>
                   </div>
                   <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
                     <div
-                      className={`h-full rounded-full transition-all duration-700 ${p.confidence >= 85 ? "bg-success" : p.confidence >= 70 ? "bg-warning" : "bg-destructive"}`}
-                      style={{ width: `${p.confidence}%` }}
+                      className={`h-full rounded-full transition-all duration-700 ${
+                        conf >= 85 ? "bg-success" : conf >= 70 ? "bg-warning" : "bg-destructive"
+                      }`}
+                      style={{ width: `${Math.min(100, conf)}%` }}
                     />
                   </div>
                 </div>
 
-                {/* Signal & meta */}
                 <div className="flex items-center justify-between pt-1 border-t border-border/40">
-                  <div className={`flex items-center gap-1 text-xs font-semibold ${
-                    signal === "positive" ? "text-success" : signal === "negative" ? "text-destructive" : "text-warning"
-                  }`}>
-                    {signal === "positive"
-                      ? <><TrendingUp className="w-3.5 h-3.5" />AI lebih optimis ({diff > 0 ? "+" : ""}{diff}%)</>
-                      : signal === "negative"
-                      ? <><TrendingDown className="w-3.5 h-3.5" />AI lebih pesimis ({diff}%)</>
-                      : <><BarChart2 className="w-3.5 h-3.5" />Selisih kecil</>
-                    }
+                  <div
+                    className={`flex items-center gap-1 text-xs font-semibold ${
+                      signal === "positive" ? "text-success" : signal === "negative" ? "text-destructive" : "text-warning"
+                    }`}
+                  >
+                    {signal === "positive" ? (
+                      <>
+                        <TrendingUp className="w-3.5 h-3.5" />
+                        AI lebih optimis ({diff > 0 ? "+" : ""}
+                        {diff.toFixed(0)}%)
+                      </>
+                    ) : signal === "negative" ? (
+                      <>
+                        <TrendingDown className="w-3.5 h-3.5" />
+                        AI lebih pesimis ({diff.toFixed(0)}%)
+                      </>
+                    ) : (
+                      <>
+                        <BarChart2 className="w-3.5 h-3.5" />
+                        Selisih kecil
+                      </>
+                    )}
                   </div>
                   <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
                     <Clock className="w-3 h-3" />
-                    {p.lastUpdate}
+                    {lastUpdate}
                   </div>
                 </div>
 
-                {/* Volume */}
                 <div className="flex items-center justify-between text-[11px] text-muted-foreground -mt-2">
-                  <span>Vol: ${p.volume}</span>
-                  <button className="flex items-center gap-0.5 text-primary hover:underline font-medium opacity-0 group-hover:opacity-100 transition-opacity">
+                  <span>Event ID: {p.event_id.slice(0, 8)}…</span>
+                  <button
+                    type="button"
+                    className="flex items-center gap-0.5 text-primary hover:underline font-medium opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
                     Detail <ArrowUpRight className="w-3 h-3" />
                   </button>
                 </div>
@@ -225,6 +259,12 @@ export default function PrediksiLangsung() {
             );
           })}
         </div>
+
+        {!liveQ.isLoading && filtered.length === 0 && (
+          <div className="text-center py-16 text-muted-foreground text-sm">
+            Tidak ada prediksi berstatus <code>pending</code>. Jalankan pipeline analisis dari backend.
+          </div>
+        )}
       </div>
     </DashboardLayout>
   );

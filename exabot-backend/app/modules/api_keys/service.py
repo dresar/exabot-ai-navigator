@@ -70,16 +70,13 @@ class KeyPoolManager:
         return rotated
 
     async def reset_daily_usage(self, db: AsyncSession) -> None:
-        """Reset daily usage counters (call at midnight)."""
+        """Reset daily usage counters (call at midnight / scheduled task)."""
+        now = datetime.now(timezone.utc)
         await db.execute(
-            update(ApiKey)
-            .values(daily_usage=0, last_reset_at=datetime.now(timezone.utc))
-            .where(ApiKey.status == "limit")
-            .values(status="active")
+            update(ApiKey).values(daily_usage=0, last_reset_at=now)
         )
         await db.execute(
-            update(ApiKey)
-            .values(daily_usage=0, last_reset_at=datetime.now(timezone.utc))
+            update(ApiKey).where(ApiKey.status == "limit").values(status="active")
         )
         await db.commit()
 

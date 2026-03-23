@@ -1,26 +1,28 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Search, TrendingUp, TrendingDown, Filter, SlidersHorizontal, ArrowUpDown, Star, ExternalLink } from "lucide-react";
-import { useState } from "react";
+import { apiFetch, ApiError } from "@/lib/api";
+import { useExabotWebSocketChannel } from "@/hooks/useExabotWebSocket";
+import { formatUsdShort, toNum } from "@/lib/format";
+import { toast } from "sonner";
 
-const markets = [
-  { id: 1, name: "Pemilu Presiden AS 2028", yes: 0.62, no: 0.38, volume: "12.4M", change: 3.2, category: "Politik", trending: true, aiEdge: 8 },
-  { id: 2, name: "Bitcoin > $150k EOY 2025", yes: 0.28, no: 0.72, volume: "8.7M", change: -1.5, category: "Kripto", trending: false, aiEdge: -12 },
-  { id: 3, name: "Fed Rate 3.0% Q4 2025", yes: 0.71, no: 0.29, volume: "5.2M", change: 5.8, category: "Ekonomi", trending: true, aiEdge: 15 },
-  { id: 4, name: "SpaceX IPO Terjadi 2025", yes: 0.15, no: 0.85, volume: "3.1M", change: 0.8, category: "Teknologi", trending: false, aiEdge: -4 },
-  { id: 5, name: "Indonesia IHSG > 8.000", yes: 0.55, no: 0.45, volume: "1.8M", change: -2.1, category: "Saham", trending: false, aiEdge: 11 },
-  { id: 6, name: "AI Regulation EU Disahkan", yes: 0.82, no: 0.18, volume: "4.5M", change: 1.2, category: "Regulasi", trending: true, aiEdge: 6 },
-  { id: 7, name: "Harga Emas > $3.000/oz", yes: 0.45, no: 0.55, volume: "6.3M", change: 4.1, category: "Komoditas", trending: true, aiEdge: 19 },
-  { id: 8, name: "Apple Car Diumumkan 2025", yes: 0.08, no: 0.92, volume: "2.9M", change: -0.5, category: "Teknologi", trending: false, aiEdge: -3 },
-  { id: 9, name: "Ethereum Melampaui $10.000", yes: 0.33, no: 0.67, volume: "7.1M", change: 2.4, category: "Kripto", trending: false, aiEdge: 7 },
-  { id: 10, name: "Inflasi AS Turun < 2%", yes: 0.64, no: 0.36, volume: "3.8M", change: 1.9, category: "Ekonomi", trending: false, aiEdge: 13 },
-  { id: 11, name: "NVIDIA Tetap #1 AI Chip", yes: 0.88, no: 0.12, volume: "9.2M", change: 0.3, category: "Teknologi", trending: true, aiEdge: 4 },
-  { id: 12, name: "G20 Sepakati Climate Deal", yes: 0.42, no: 0.58, volume: "1.4M", change: -0.8, category: "Politik", trending: false, aiEdge: -9 },
-];
+type MarketRow = {
+  id: string;
+  name: string;
+  yes_price: string | number;
+  no_price: string | number;
+  volume_usd: string | number;
+  change_24h: string | number;
+  is_trending: boolean;
+  category: string;
+};
 
-const categories = ["Semua", "Politik", "Kripto", "Ekonomi", "Teknologi", "Saham", "Komoditas", "Regulasi"];
+type MarketList = { items: MarketRow[]; total: number };
+type CategoriesResp = { items: string[] };
 
 const categoryColors: Record<string, string> = {
   Politik: "bg-purple-500/10 text-purple-400 border-purple-500/20",
@@ -33,52 +35,114 @@ const categoryColors: Record<string, string> = {
 };
 
 export default function DataPasar() {
+  const qc = useQueryClient();
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState("Semua");
-  const [sortBy, setSortBy] = useState<"volume" | "change" | "aiEdge">("volume");
-  const [watchlist, setWatchlist] = useState<number[]>([1, 3, 7]);
+  const [sortBy, setSortBy] = useState<"volume_usd" | "change_24h" | "yes_price">("volume_usd");
+  const [watchSet, setWatchSet] = useState<Set<string>>(new Set());
 
-  const filtered = markets
-    .filter((m) => {
-      const matchSearch = m.name.toLowerCase().includes(search.toLowerCase());
-      const matchCat = activeCategory === "Semua" || m.category === activeCategory;
-      return matchSearch && matchCat;
-    })
-    .sort((a, b) => {
-      if (sortBy === "volume") return parseFloat(b.volume) - parseFloat(a.volume);
-      if (sortBy === "change") return b.change - a.change;
-      if (sortBy === "aiEdge") return Math.abs(b.aiEdge) - Math.abs(a.aiEdge);
-      return 0;
-    });
+  const onWs = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ["markets"] });
+  }, [qc]);
+  useExabotWebSocketChannel("market", onWs);
 
-  const toggleWatchlist = (id: number) => {
-    setWatchlist((prev) => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
-  };
+  const categoriesQ = useQuery({
+    queryKey: ["markets", "categories"],
+    queryFn: () => apiFetch<CategoriesResp>("/markets/categories"),
+    staleTime: 120_000,
+  });
+
+  const categoryTabs = useMemo(() => ["Semua", ...(categoriesQ.data?.items ?? [])], [categoriesQ.data?.items]);
+
+  const marketsQ = useQuery({
+    queryKey: ["markets", debouncedSearch, activeCategory, sortBy],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        limit: "50",
+        page: "1",
+        sort_by: sortBy,
+        order: "desc",
+      });
+      if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
+      if (activeCategory !== "Semua") params.set("category", activeCategory);
+      return apiFetch<MarketList>(`/markets?${params.toString()}`);
+    },
+    refetchInterval: 60_000,
+  });
+
+  const toggleWatch = useMutation({
+    mutationFn: async ({ id, on }: { id: string; on: boolean }) => {
+      if (on) {
+        await apiFetch(`/markets/${id}/watch`, { method: "POST" });
+      } else {
+        await apiFetch(`/markets/${id}/watch`, { method: "DELETE" });
+      }
+    },
+    onMutate: async ({ id, on }) => {
+      setWatchSet((prev) => {
+        const n = new Set(prev);
+        if (on) n.add(id);
+        else n.delete(id);
+        return n;
+      });
+    },
+    onError: (err: unknown, { id, on }) => {
+      setWatchSet((prev) => {
+        const n = new Set(prev);
+        if (on) n.delete(id);
+        else n.add(id);
+        return n;
+      });
+      const msg = err instanceof ApiError ? err.body || err.message : "Gagal memperbarui watchlist";
+      toast.error(msg);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["markets"] }),
+  });
+
+  const items = marketsQ.data?.items ?? [];
+
+  const sortedLocal = useMemo(() => {
+    const copy = [...items];
+    if (sortBy === "yes_price") {
+      copy.sort((a, b) => toNum(b.yes_price) - toNum(a.yes_price));
+    }
+    return copy;
+  }, [items, sortBy]);
+
+  const totalVol = useMemo(() => {
+    return sortedLocal.reduce((s, m) => s + toNum(m.volume_usd), 0);
+  }, [sortedLocal]);
+
+  const trendingN = sortedLocal.filter((m) => m.is_trending).length;
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(search), 400);
+    return () => window.clearTimeout(t);
+  }, [search]);
 
   return (
     <DashboardLayout>
       <div className="space-y-5 animate-fade-in">
-        {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Data Pasar</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              {filtered.length} event tersedia · Diperbarui setiap 5 menit
+              {marketsQ.data?.total ?? sortedLocal.length} event · {marketsQ.isFetching ? "Memperbarui…" : "REST + WebSocket"}
             </p>
           </div>
-          <Button variant="outline" size="sm" className="gap-1.5 text-xs">
+          <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => marketsQ.refetch()}>
             <SlidersHorizontal className="w-3.5 h-3.5" />
-            Filter Lanjutan
+            Refresh
           </Button>
         </div>
 
-        {/* Stats summary */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
-            { label: "Total Event", value: `${markets.length}`, sub: "aktif" },
-            { label: "Volume Total", value: "$76.4M", sub: "24 jam" },
-            { label: "AI Edge Terbaik", value: "+19%", sub: "Emas > $3k" },
-            { label: "Trending", value: `${markets.filter(m => m.trending).length}`, sub: "event hot" },
+            { label: "Total Event", value: String(marketsQ.data?.total ?? "—"), sub: "halaman ini" },
+            { label: "Volume (subset)", value: `$${formatUsdShort(totalVol)}`, sub: "50 baris" },
+            { label: "Trending", value: String(trendingN), sub: "event hot" },
+            { label: "Watchlist lokal", value: String(watchSet.size), sub: "session" },
           ].map((s) => (
             <div key={s.label} className="glass-card px-4 py-3">
               <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">{s.label}</p>
@@ -88,7 +152,6 @@ export default function DataPasar() {
           ))}
         </div>
 
-        {/* Search & Filter */}
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1 max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -102,13 +165,14 @@ export default function DataPasar() {
           <div className="flex items-center gap-2">
             <span className="text-xs text-muted-foreground shrink-0">Urutkan:</span>
             {[
-              { key: "volume", label: "Volume" },
-              { key: "change", label: "Perubahan" },
-              { key: "aiEdge", label: "AI Edge" },
+              { key: "volume_usd" as const, label: "Volume" },
+              { key: "change_24h" as const, label: "Perubahan" },
+              { key: "yes_price" as const, label: "YES" },
             ].map((s) => (
               <button
                 key={s.key}
-                onClick={() => setSortBy(s.key as any)}
+                type="button"
+                onClick={() => setSortBy(s.key)}
                 className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all border ${
                   sortBy === s.key
                     ? "bg-primary text-primary-foreground border-primary"
@@ -121,11 +185,14 @@ export default function DataPasar() {
           </div>
         </div>
 
-        {/* Category Pills */}
         <div className="flex gap-2 flex-wrap">
-          {categories.map((cat) => (
+          {categoriesQ.isError && (
+            <p className="text-xs text-destructive w-full">Gagal memuat kategori — filter hanya &quot;Semua&quot;.</p>
+          )}
+          {categoryTabs.map((cat) => (
             <button
               key={cat}
+              type="button"
               onClick={() => setActiveCategory(cat)}
               className={`px-3 py-1 rounded-lg text-xs font-medium transition-all duration-200 border ${
                 activeCategory === cat
@@ -138,7 +205,6 @@ export default function DataPasar() {
           ))}
         </div>
 
-        {/* Table */}
         <div className="glass-card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full data-table">
@@ -150,7 +216,9 @@ export default function DataPasar() {
                   <th className="text-center text-success">YES</th>
                   <th className="text-center text-destructive">NO</th>
                   <th className="text-center">
-                    <div className="flex items-center justify-center gap-1">Volume <ArrowUpDown className="w-3 h-3" /></div>
+                    <div className="flex items-center justify-center gap-1">
+                      Volume <ArrowUpDown className="w-3 h-3" />
+                    </div>
                   </th>
                   <th className="text-center">Perubahan</th>
                   <th className="text-center">AI Edge</th>
@@ -158,64 +226,100 @@ export default function DataPasar() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((m, idx) => (
-                  <tr
-                    key={m.id}
-                    className="cursor-pointer group animate-fade-in"
-                    style={{ animationDelay: `${idx * 40}ms` }}
-                  >
-                    <td className="pl-4 pr-0">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); toggleWatchlist(m.id); }}
-                        className="transition-colors"
-                      >
-                        <Star className={`w-3.5 h-3.5 ${watchlist.includes(m.id) ? "fill-warning text-warning" : "text-muted-foreground/40 hover:text-muted-foreground"}`} />
-                      </button>
-                    </td>
-                    <td>
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{m.name}</span>
-                        {m.trending && (
-                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/20">HOT</span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="text-center">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${categoryColors[m.category] || ""}`}>
-                        {m.category}
-                      </span>
-                    </td>
-                    <td className="text-center">
-                      <span className="font-bold text-success">{(m.yes * 100).toFixed(0)}¢</span>
-                    </td>
-                    <td className="text-center">
-                      <span className="font-bold text-destructive">{(m.no * 100).toFixed(0)}¢</span>
-                    </td>
-                    <td className="text-center text-muted-foreground text-xs">${m.volume}</td>
-                    <td className="text-center">
-                      <span className={`inline-flex items-center gap-1 text-xs font-semibold ${m.change >= 0 ? "text-success" : "text-destructive"}`}>
-                        {m.change >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-                        {m.change > 0 ? "+" : ""}{m.change}%
-                      </span>
-                    </td>
-                    <td className="text-center">
-                      <span className={`text-xs font-bold ${Math.abs(m.aiEdge) >= 10 ? (m.aiEdge > 0 ? "text-success" : "text-destructive") : "text-muted-foreground"}`}>
-                        {m.aiEdge > 0 ? "+" : ""}{m.aiEdge}%
-                      </span>
-                    </td>
-                    <td className="pr-4">
-                      <ExternalLink className="w-3.5 h-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                {marketsQ.isLoading && (
+                  <tr>
+                    <td colSpan={9} className="text-center py-12 text-muted-foreground">
+                      Memuat pasar…
                     </td>
                   </tr>
-                ))}
+                )}
+                {marketsQ.isError && (
+                  <tr>
+                    <td colSpan={9} className="text-center py-12 text-destructive">
+                      Gagal memuat data pasar.
+                    </td>
+                  </tr>
+                )}
+                {!marketsQ.isLoading &&
+                  sortedLocal.map((m, idx) => {
+                    const yes = toNum(m.yes_price);
+                    const no = toNum(m.no_price);
+                    const ch = toNum(m.change_24h);
+                    const vol = toNum(m.volume_usd);
+                    const watched = watchSet.has(m.id);
+                    return (
+                      <tr
+                        key={m.id}
+                        className="cursor-pointer group animate-fade-in"
+                        style={{ animationDelay: `${idx * 40}ms` }}
+                      >
+                        <td className="pl-4 pr-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleWatch.mutate({ id: m.id, on: !watched });
+                            }}
+                            className="transition-colors"
+                            aria-label="Toggle watchlist"
+                          >
+                            <Star
+                              className={`w-3.5 h-3.5 ${watched ? "fill-warning text-warning" : "text-muted-foreground/40 hover:text-muted-foreground"}`}
+                            />
+                          </button>
+                        </td>
+                        <td>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{m.name}</span>
+                            {m.is_trending && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/20">
+                                HOT
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="text-center">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                              categoryColors[m.category] || "bg-secondary/50 text-muted-foreground border-border/50"
+                            }`}
+                          >
+                            {m.category}
+                          </span>
+                        </td>
+                        <td className="text-center">
+                          <span className="font-bold text-success">{(yes * 100).toFixed(0)}¢</span>
+                        </td>
+                        <td className="text-center">
+                          <span className="font-bold text-destructive">{(no * 100).toFixed(0)}¢</span>
+                        </td>
+                        <td className="text-center text-muted-foreground text-xs">${formatUsdShort(vol)}</td>
+                        <td className="text-center">
+                          <span
+                            className={`inline-flex items-center gap-1 text-xs font-semibold ${
+                              ch >= 0 ? "text-success" : "text-destructive"
+                            }`}
+                          >
+                            {ch >= 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                            {ch > 0 ? "+" : ""}
+                            {ch.toFixed(1)}%
+                          </span>
+                        </td>
+                        <td className="text-center text-xs text-muted-foreground">—</td>
+                        <td className="pr-4">
+                          <ExternalLink className="w-3.5 h-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
-          {filtered.length === 0 && (
+          {!marketsQ.isLoading && sortedLocal.length === 0 && (
             <div className="py-16 text-center">
               <Filter className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
-              <p className="text-sm font-medium text-muted-foreground">Tidak ada event yang cocok</p>
-              <p className="text-xs text-muted-foreground/60 mt-1">Coba ubah filter atau kata kunci pencarian</p>
+              <p className="text-sm font-medium text-muted-foreground">Tidak ada event</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">Sesuaikan filter atau jalankan ingestion backend</p>
             </div>
           )}
         </div>

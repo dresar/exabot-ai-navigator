@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, BackgroundTasks, Query
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -10,6 +10,16 @@ from app.modules.backtesting.schemas import BacktestRunRequest, BacktestJobOut
 from app.modules.backtesting.service import run_backtest
 
 router = APIRouter(prefix="/backtest", tags=["Backtesting"])
+
+
+async def run_backtest_job_task(job_id: str) -> None:
+    from app.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(BacktestJob).where(BacktestJob.id == job_id))
+        job = result.scalar_one_or_none()
+        if job:
+            await run_backtest(db, job)
 
 
 @router.post("/run", response_model=BacktestJobOut, status_code=201)
@@ -30,8 +40,7 @@ async def run(
     await db.commit()
     await db.refresh(job)
 
-    # Run in background
-    background_tasks.add_task(run_backtest, db, job)
+    background_tasks.add_task(run_backtest_job_task, str(job.id))
 
     return job
 

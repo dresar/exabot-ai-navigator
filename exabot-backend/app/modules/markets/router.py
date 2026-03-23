@@ -1,16 +1,26 @@
-from typing import List, Optional
-from fastapi import APIRouter, Depends, Query
+from typing import Optional, Set
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import MarketEvent, User
+from app.models import MarketEvent, User, UserWatchlist
 from app.core.dependencies import get_current_active_user
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, ConflictError
 from app.redis_client import cache
-from app.modules.markets.schemas import MarketEventOut, MarketListResponse
+from app.modules.markets.schemas import MarketEventOut, MarketListResponse, MarketCategoriesResponse
 
 router = APIRouter(prefix="/markets", tags=["Markets"])
+
+SORT_WHITELIST: Set[str] = {
+    "volume_usd",
+    "yes_price",
+    "no_price",
+    "change_24h",
+    "created_at",
+    "name",
+    "category",
+}
 
 
 @router.get("", response_model=MarketListResponse)
@@ -29,30 +39,29 @@ async def list_markets(
     if cached:
         return cached
 
-    query = select(MarketEvent).where(MarketEvent.status == "active")
+    safe_sort = sort_by if sort_by in SORT_WHITELIST else "volume_usd"
+    sort_col = getattr(MarketEvent, safe_sort, MarketEvent.volume_usd)
 
+    filters = [MarketEvent.status == "active"]
     if category:
-        query = query.where(MarketEvent.category == category)
+        filters.append(MarketEvent.category == category)
     if search:
-        query = query.where(
+        filters.append(
             or_(
                 MarketEvent.name.ilike(f"%{search}%"),
                 MarketEvent.description.ilike(f"%{search}%"),
             )
         )
 
-    # Sorting
-    sort_col = getattr(MarketEvent, sort_by, MarketEvent.volume_usd)
+    count_stmt = select(func.count()).select_from(MarketEvent).where(*filters)
+    total = (await db.execute(count_stmt)).scalar_one()
+
+    query = select(MarketEvent).where(*filters)
     if order == "asc":
         query = query.order_by(sort_col.asc())
     else:
         query = query.order_by(sort_col.desc())
 
-    # Count
-    count_q = select(func.count()).select_from(query.subquery())
-    total = (await db.execute(count_q)).scalar_one()
-
-    # Paginate
     offset = (page - 1) * limit
     query = query.offset(offset).limit(limit)
     result = await db.execute(query)
@@ -66,6 +75,68 @@ async def list_markets(
     }
     await cache.set(cache_key, response, ttl=300)
     return response
+
+
+@router.get("/categories", response_model=MarketCategoriesResponse)
+async def list_market_categories(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Distinct `category` values for active events (for tab filters)."""
+    stmt = (
+        select(MarketEvent.category)
+        .where(MarketEvent.status == "active")
+        .distinct()
+        .order_by(MarketEvent.category.asc())
+    )
+    result = await db.execute(stmt)
+    items = [row[0] for row in result.all() if row[0]]
+    return MarketCategoriesResponse(items=items)
+
+
+@router.post("/{market_id}/watch", status_code=status.HTTP_201_CREATED)
+async def add_watch(
+    market_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    m = await db.execute(select(MarketEvent).where(MarketEvent.id == market_id))
+    if not m.scalar_one_or_none():
+        raise NotFoundError("Market event not found")
+
+    existing = await db.execute(
+        select(UserWatchlist).where(
+            UserWatchlist.user_id == current_user.id,
+            UserWatchlist.market_event_id == market_id,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise ConflictError("Already in watchlist")
+
+    w = UserWatchlist(user_id=current_user.id, market_event_id=market_id)
+    db.add(w)
+    await db.commit()
+    await db.refresh(w)
+    return {"watchlist_id": w.id, "market_id": market_id}
+
+
+@router.delete("/{market_id}/watch", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_watch(
+    market_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    result = await db.execute(
+        select(UserWatchlist).where(
+            UserWatchlist.user_id == current_user.id,
+            UserWatchlist.market_event_id == market_id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if not row:
+        raise NotFoundError("Watchlist entry not found")
+    await db.delete(row)
+    await db.commit()
 
 
 @router.get("/{market_id}", response_model=MarketEventOut)

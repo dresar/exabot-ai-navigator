@@ -6,6 +6,7 @@ import json
 import re
 from typing import Dict, Any, Optional
 
+from app.config import settings
 from app.integrations.openai_client import chat_completion
 
 
@@ -57,7 +58,7 @@ Analyze this prediction market event and provide your assessment."""
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
         ],
-        model="gpt-4o-mini",
+        model=settings.LLM_MODEL,
         temperature=0.2,
         max_tokens=600,
     )

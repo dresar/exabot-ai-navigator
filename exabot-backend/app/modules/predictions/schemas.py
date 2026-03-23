@@ -7,6 +7,8 @@ from pydantic import BaseModel
 class PredictionOut(BaseModel):
     id: str
     event_id: str
+    event_name: Optional[str] = None
+    category: Optional[str] = None
     ai_probability: Decimal
     market_probability: Decimal
     confidence: Decimal

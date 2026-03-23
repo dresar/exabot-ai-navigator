@@ -1,13 +1,13 @@
 """
-WebSocket connection manager with Redis pub/sub fan-out.
-Supports multiple workers broadcasting to all connected clients.
+WebSocket connection manager — in-process broadcast to subscribed channels.
 """
-import asyncio
 import json
-from typing import Dict, List, Set
+import logging
+from typing import Dict, List
+
 from fastapi import WebSocket
-import redis.asyncio as aioredis
-from app.redis_client import get_redis_pool
+
+logger = logging.getLogger("exabot.ws")
 
 
 class ConnectionManager:
@@ -36,24 +36,6 @@ class ConnectionManager:
                 dead.append(ws)
         for ws in dead:
             self.disconnect(ws, channel)
-
-    async def start_subscriber(self) -> None:
-        """Long-running Redis pub/sub listener. Call from startup."""
-        r = get_redis_pool()
-        pubsub = r.pubsub()
-
-        channels = ["predictions", "market", "notifications", "system"]
-        await pubsub.subscribe(*channels)
-
-        async for message in pubsub.listen():
-            if message["type"] != "message":
-                continue
-            channel = message["channel"]
-            try:
-                data = json.loads(message["data"])
-                await self.broadcast(channel, data)
-            except Exception:
-                pass
 
 
 manager = ConnectionManager()

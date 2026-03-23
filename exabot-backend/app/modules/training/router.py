@@ -13,8 +13,17 @@ from app.core.dependencies import get_current_active_user
 from app.core.exceptions import NotFoundError, BadRequestError
 from app.modules.training.schemas import TrainingSessionOut, EpochOut
 from app.redis_client import cache
+from app.modules.websocket.manager import manager
 
 router = APIRouter(prefix="/training", tags=["Training"])
+
+
+async def run_training_session_task(session_id: str) -> None:
+    """Background entry: own DB session (request session must not be reused)."""
+    from app.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        await _run_training_task(session_id, db)
 
 
 async def _run_training_task(session_id: str, db: AsyncSession):
@@ -61,15 +70,18 @@ async def _run_training_task(session_id: str, db: AsyncSession):
             db.add(session)
             await db.commit()
 
-            # Broadcast WebSocket progress
-            await cache.publish(f"training:{session_id}", {
-                "type": "epoch_update",
-                "epoch": epoch,
-                "total_epochs": total_epochs,
-                "progress": session.progress,
-                "accuracy": epoch_acc,
-                "loss": epoch_loss,
-            })
+            # Broadcast WebSocket progress (in-process)
+            await manager.broadcast(
+                f"training:{session_id}",
+                {
+                    "type": "epoch_update",
+                    "epoch": epoch,
+                    "total_epochs": total_epochs,
+                    "progress": session.progress,
+                    "accuracy": epoch_acc,
+                    "loss": epoch_loss,
+                },
+            )
 
         session.status = "completed"
         session.final_accuracy = session.current_accuracy
@@ -78,10 +90,13 @@ async def _run_training_task(session_id: str, db: AsyncSession):
         db.add(session)
         await db.commit()
 
-        await cache.publish(f"training:{session_id}", {
-            "type": "training_complete",
-            "final_accuracy": float(session.final_accuracy),
-        })
+        await manager.broadcast(
+            f"training:{session_id}",
+            {
+                "type": "training_complete",
+                "final_accuracy": float(session.final_accuracy),
+            },
+        )
 
     except Exception as e:
         session.status = "failed"
@@ -180,7 +195,7 @@ async def start_session(
     if session.status not in ("queued", "paused", "failed"):
         raise BadRequestError(f"Cannot start session with status '{session.status}'")
 
-    background_tasks.add_task(_run_training_task, session_id, db)
+    background_tasks.add_task(run_training_session_task, session_id)
     return session
 
 
@@ -233,6 +248,14 @@ async def get_epochs(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ):
+    own = await db.execute(
+        select(TrainingSession).where(
+            TrainingSession.id == session_id,
+            TrainingSession.user_id == current_user.id,
+        )
+    )
+    if not own.scalar_one_or_none():
+        raise NotFoundError("Training session not found")
     result = await db.execute(
         select(TrainingEpoch)
         .where(TrainingEpoch.session_id == session_id)

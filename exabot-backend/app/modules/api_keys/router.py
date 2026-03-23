@@ -10,7 +10,11 @@ from app.core.exceptions import NotFoundError
 from app.core.encryption import decrypt
 from app.modules.api_keys import service
 from app.modules.api_keys.schemas import (
-    ApiKeyCreate, ApiKeyUpdate, ApiKeyOut, ApiKeyTestResult,
+    ApiKeyCreate,
+    ApiKeyUpdate,
+    ApiKeyOut,
+    ApiKeyTestResult,
+    RotateRequest,
 )
 
 router = APIRouter(prefix="/keys", tags=["API Keys"])
@@ -92,7 +96,7 @@ async def delete_key(
 @router.post("/{key_id}/rotate", response_model=ApiKeyOut)
 async def rotate_key(
     key_id: str,
-    body: ApiKeyCreate,
+    body: RotateRequest,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ):

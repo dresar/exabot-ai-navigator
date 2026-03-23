@@ -43,3 +43,9 @@ class ApiKeyTestResult(BaseModel):
     success: bool
     message: str
     latency_ms: Optional[float] = None
+
+
+class RotateRequest(BaseModel):
+    """Body for rotating an API key (new secret only)."""
+
+    key_value: str

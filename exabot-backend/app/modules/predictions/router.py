@@ -4,7 +4,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import User, Prediction
+from app.models import User, Prediction, MarketEvent
 from app.core.dependencies import get_current_active_user
 from app.core.exceptions import NotFoundError
 from app.redis_client import cache
@@ -25,19 +25,39 @@ async def list_predictions(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(Prediction).where(Prediction.user_id == current_user.id)
+    filters = [Prediction.user_id == current_user.id]
     if status:
-        query = query.where(Prediction.status == status)
-    query = query.order_by(Prediction.created_at.desc())
+        filters.append(Prediction.status == status)
+    if category:
+        filters.append(MarketEvent.category == category)
 
-    count_q = select(func.count()).select_from(query.subquery())
+    count_q = (
+        select(func.count())
+        .select_from(Prediction)
+        .join(MarketEvent, Prediction.event_id == MarketEvent.id)
+        .where(*filters)
+    )
     total = (await db.execute(count_q)).scalar_one()
 
     offset = (page - 1) * limit
-    result = await db.execute(query.offset(offset).limit(limit))
-    items = result.scalars().all()
+    result = await db.execute(
+        select(Prediction, MarketEvent.name, MarketEvent.category)
+        .join(MarketEvent, Prediction.event_id == MarketEvent.id)
+        .where(*filters)
+        .order_by(Prediction.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    rows = result.all()
+    items_out = []
+    for row in rows:
+        pred, event_name, cat = row[0], row[1], row[2]
+        d = PredictionOut.model_validate(pred).model_dump(mode="json")
+        d["event_name"] = event_name
+        d["category"] = cat
+        items_out.append(d)
 
-    return {"items": items, "total": total, "page": page, "limit": limit}
+    return {"items": items_out, "total": total, "page": page, "limit": limit}
 
 
 @router.get("/live", response_model=list)
@@ -50,13 +70,19 @@ async def live_predictions(
         return cached
 
     result = await db.execute(
-        select(Prediction)
+        select(Prediction, MarketEvent.name, MarketEvent.category)
+        .join(MarketEvent, Prediction.event_id == MarketEvent.id)
         .where(Prediction.status == "pending")
         .order_by(Prediction.created_at.desc())
         .limit(20)
     )
-    items = result.scalars().all()
-    data = [PredictionOut.model_validate(i).model_dump(mode="json") for i in items]
+    rows = result.all()
+    data = []
+    for pred, event_name, category in rows:
+        d = PredictionOut.model_validate(pred).model_dump(mode="json")
+        d["event_name"] = event_name
+        d["category"] = category
+        data.append(d)
     await cache.set("predictions:live", data, ttl=120)
     return data
 

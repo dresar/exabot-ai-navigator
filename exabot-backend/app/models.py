@@ -7,8 +7,8 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import (
-    Boolean, Column, Date, DateTime, Decimal, ForeignKey,
-    Integer, String, Text, UniqueConstraint, func,
+    Boolean, Column, Date, DateTime, ForeignKey,
+    Integer, Numeric, String, Text, UniqueConstraint, func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
@@ -49,6 +49,7 @@ class User(Base):
     settings = relationship("UserSettings", back_populates="user", uselist=False, cascade="all, delete-orphan")
     performance_snapshots = relationship("PerformanceSnapshot", back_populates="user", cascade="all, delete-orphan")
     backtest_jobs = relationship("BacktestJob", back_populates="user", cascade="all, delete-orphan")
+    watchlist_entries = relationship("UserWatchlist", back_populates="user", cascade="all, delete-orphan")
 
 
 class RefreshToken(Base):
@@ -75,10 +76,10 @@ class MarketEvent(Base):
     name = Column(Text, nullable=False)
     category = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
-    yes_price = Column(Decimal(6, 4), default=0.5)
-    no_price = Column(Decimal(6, 4), default=0.5)
-    volume_usd = Column(Decimal(20, 2), default=0)
-    change_24h = Column(Decimal(8, 4), default=0)
+    yes_price = Column(Numeric(6, 4), default=0.5)
+    no_price = Column(Numeric(6, 4), default=0.5)
+    volume_usd = Column(Numeric(20, 2), default=0)
+    change_24h = Column(Numeric(8, 4), default=0)
     is_trending = Column(Boolean, default=False)
     status = Column(String(50), default="active")
     resolution = Column(Boolean, nullable=True)
@@ -91,6 +92,21 @@ class MarketEvent(Base):
     predictions = relationship("Prediction", back_populates="event", cascade="all, delete-orphan")
     news_articles = relationship("NewsArticle", back_populates="event", cascade="all, delete-orphan")
     simulation_trades = relationship("SimulationTrade", back_populates="event")
+    watchlist_entries = relationship("UserWatchlist", back_populates="event", cascade="all, delete-orphan")
+
+
+class UserWatchlist(Base):
+    """Markets a user follows (watchlist)."""
+    __tablename__ = "user_watchlist"
+    __table_args__ = (UniqueConstraint("user_id", "market_event_id"),)
+
+    id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    market_event_id = Column(UUID(as_uuid=False), ForeignKey("market_events.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="watchlist_entries")
+    event = relationship("MarketEvent", back_populates="watchlist_entries")
 
 
 class Prediction(Base):
@@ -99,10 +115,10 @@ class Prediction(Base):
     id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
     event_id = Column(UUID(as_uuid=False), ForeignKey("market_events.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    ai_probability = Column(Decimal(5, 2), nullable=False)
-    market_probability = Column(Decimal(5, 2), nullable=False)
-    confidence = Column(Decimal(5, 2), nullable=False)
-    ai_edge = Column(Decimal(6, 2), nullable=True)
+    ai_probability = Column(Numeric(5, 2), nullable=False)
+    market_probability = Column(Numeric(5, 2), nullable=False)
+    confidence = Column(Numeric(5, 2), nullable=False)
+    ai_edge = Column(Numeric(6, 2), nullable=True)
     status = Column(String(50), default="pending")
     result = Column(Boolean, nullable=True)
     reasoning = Column(Text, nullable=True)
@@ -128,11 +144,11 @@ class AiModel(Base):
     model_type = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
     version = Column(String(50), default="1.0")
-    accuracy = Column(Decimal(5, 2), nullable=True)
-    prev_accuracy = Column(Decimal(5, 2), nullable=True)
+    accuracy = Column(Numeric(5, 2), nullable=True)
+    prev_accuracy = Column(Numeric(5, 2), nullable=True)
     latency_ms = Column(Integer, nullable=True)
     is_active = Column(Boolean, default=True)
-    weight = Column(Decimal(5, 4), default=0.2)
+    weight = Column(Numeric(5, 4), default=0.2)
     config = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -187,8 +203,8 @@ class TrainingSession(Base):
     progress = Column(Integer, default=0)
     total_epochs = Column(Integer, default=50)
     current_epoch = Column(Integer, default=0)
-    current_accuracy = Column(Decimal(5, 2), nullable=True)
-    final_accuracy = Column(Decimal(5, 2), nullable=True)
+    current_accuracy = Column(Numeric(5, 2), nullable=True)
+    final_accuracy = Column(Numeric(5, 2), nullable=True)
     error_message = Column(Text, nullable=True)
     celery_task_id = Column(String(255), nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
@@ -206,9 +222,9 @@ class TrainingEpoch(Base):
     id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
     session_id = Column(UUID(as_uuid=False), ForeignKey("training_sessions.id", ondelete="CASCADE"), nullable=False)
     epoch = Column(Integer, nullable=False)
-    accuracy = Column(Decimal(5, 2), nullable=True)
-    loss = Column(Decimal(8, 6), nullable=True)
-    val_accuracy = Column(Decimal(5, 2), nullable=True)
+    accuracy = Column(Numeric(5, 2), nullable=True)
+    loss = Column(Numeric(8, 6), nullable=True)
+    val_accuracy = Column(Numeric(5, 2), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     session = relationship("TrainingSession", back_populates="epochs")
@@ -223,9 +239,9 @@ class SimulationAccount(Base):
 
     id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
     user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
-    balance = Column(Decimal(20, 2), default=100000)
-    initial_balance = Column(Decimal(20, 2), default=100000)
-    total_profit = Column(Decimal(20, 2), default=0)
+    balance = Column(Numeric(20, 2), default=100000)
+    initial_balance = Column(Numeric(20, 2), default=100000)
+    total_profit = Column(Numeric(20, 2), default=0)
     wins = Column(Integer, default=0)
     losses = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -242,12 +258,12 @@ class SimulationTrade(Base):
     account_id = Column(UUID(as_uuid=False), ForeignKey("simulation_accounts.id", ondelete="CASCADE"), nullable=False)
     event_id = Column(UUID(as_uuid=False), ForeignKey("market_events.id", ondelete="SET NULL"), nullable=True)
     position = Column(String(10), nullable=False)  # YES | NO
-    amount = Column(Decimal(20, 2), nullable=False)
-    ai_probability = Column(Decimal(5, 2), nullable=True)
-    entry_price = Column(Decimal(6, 4), nullable=True)
-    exit_price = Column(Decimal(6, 4), nullable=True)
+    amount = Column(Numeric(20, 2), nullable=False)
+    ai_probability = Column(Numeric(5, 2), nullable=True)
+    entry_price = Column(Numeric(6, 4), nullable=True)
+    exit_price = Column(Numeric(6, 4), nullable=True)
     result = Column(String(20), default="pending")  # menang|kalah|pending
-    profit = Column(Decimal(20, 2), default=0)
+    profit = Column(Numeric(20, 2), default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     resolved_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -268,10 +284,10 @@ class BacktestJob(Base):
     time_range = Column(String(20), nullable=False)
     category = Column(String(100), nullable=True)
     status = Column(String(50), default="pending")
-    accuracy = Column(Decimal(5, 2), nullable=True)
+    accuracy = Column(Numeric(5, 2), nullable=True)
     total_predictions = Column(Integer, nullable=True)
-    brier_score = Column(Decimal(8, 6), nullable=True)
-    vs_baseline = Column(Decimal(6, 2), nullable=True)
+    brier_score = Column(Numeric(8, 6), nullable=True)
+    vs_baseline = Column(Numeric(6, 2), nullable=True)
     results = Column(JSONB, nullable=True)
     celery_task_id = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -310,7 +326,7 @@ class StrategyCondition(Base):
     strategy_id = Column(UUID(as_uuid=False), ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False)
     parameter = Column(String(100), nullable=False)
     operator = Column(String(10), nullable=False)
-    threshold_value = Column(Decimal(10, 4), nullable=False)
+    threshold_value = Column(Numeric(10, 4), nullable=False)
     action = Column(String(100), nullable=False)
     order_index = Column(Integer, default=0)
 
@@ -326,8 +342,8 @@ class RiskSettings(Base):
 
     id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
     user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
-    max_daily_loss = Column(Decimal(20, 2), default=50000)
-    max_bet_per_event = Column(Decimal(20, 2), default=25000)
+    max_daily_loss = Column(Numeric(20, 2), default=50000)
+    max_bet_per_event = Column(Numeric(20, 2), default=25000)
     min_confidence = Column(Integer, default=70)
     max_drawdown = Column(Integer, default=20)
     stop_loss_enabled = Column(Boolean, default=True)
@@ -367,7 +383,7 @@ class ActivityLog(Base):
     event_name = Column(Text, nullable=True)
     action = Column(Text, nullable=False)
     status = Column(String(20), nullable=False)
-    metadata = Column(JSONB, nullable=True)
+    meta_json = Column("metadata", JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     user = relationship("User", back_populates="activity_logs")
@@ -383,7 +399,7 @@ class Notification(Base):
     description = Column(Text, nullable=True)
     is_read = Column(Boolean, default=False)
     is_urgent = Column(Boolean, default=False)
-    metadata = Column(JSONB, nullable=True)
+    meta_json = Column("metadata", JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="notifications")
@@ -418,13 +434,13 @@ class PerformanceSnapshot(Base):
     id = Column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
     user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     snapshot_date = Column(Date, nullable=False)
-    ai_accuracy = Column(Decimal(5, 2), nullable=True)
-    win_rate = Column(Decimal(5, 2), nullable=True)
+    ai_accuracy = Column(Numeric(5, 2), nullable=True)
+    win_rate = Column(Numeric(5, 2), nullable=True)
     total_predictions = Column(Integer, nullable=True)
-    avg_confidence = Column(Decimal(5, 2), nullable=True)
+    avg_confidence = Column(Numeric(5, 2), nullable=True)
     wins = Column(Integer, default=0)
     losses = Column(Integer, default=0)
-    market_baseline = Column(Decimal(5, 2), nullable=True)
+    market_baseline = Column(Numeric(5, 2), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="performance_snapshots")
@@ -444,7 +460,7 @@ class NewsArticle(Base):
     content = Column(Text, nullable=True)
     url = Column(Text, nullable=True)
     sentiment = Column(String(20), nullable=True)
-    sentiment_score = Column(Decimal(4, 3), nullable=True)
+    sentiment_score = Column(Numeric(4, 3), nullable=True)
     published_at = Column(DateTime(timezone=True), nullable=True)
     fetched_at = Column(DateTime(timezone=True), server_default=func.now())
 

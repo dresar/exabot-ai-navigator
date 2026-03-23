@@ -29,3 +29,9 @@ class MarketListResponse(BaseModel):
     total: int
     page: int
     limit: int
+
+
+class MarketCategoriesResponse(BaseModel):
+    """Distinct categories among active market events."""
+
+    items: List[str]

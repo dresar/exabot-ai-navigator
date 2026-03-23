@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
+from app.core.exceptions import ForbiddenError
 from app.database import get_db
 from app.modules.auth import service
 from app.modules.auth.schemas import (
@@ -21,6 +23,20 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
 @router.post("/login", response_model=TokenResponse)
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     access_token, refresh_token = await service.login_user(db, body.email, body.password)
+    return TokenResponse(access_token=access_token, refresh_token=refresh_token)
+
+
+@router.post("/dev-login", response_model=TokenResponse)
+async def dev_login(db: AsyncSession = Depends(get_db)):
+    """
+    Development only: issue JWT for `DEV_QUICK_LOGIN_EMAIL` user in DB (no password).
+    Disabled when `ENVIRONMENT=production` or `AUTH_DEV_QUICK_LOGIN=false`.
+    """
+    if not settings.auth_dev_quick_login_allowed:
+        raise ForbiddenError("Dev quick login is disabled")
+    access_token, refresh_token = await service.dev_quick_login(
+        db, settings.DEV_QUICK_LOGIN_EMAIL.strip()
+    )
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
 

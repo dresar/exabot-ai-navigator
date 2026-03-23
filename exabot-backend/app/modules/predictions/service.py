@@ -11,6 +11,7 @@ from app.ai.gpt_reasoning import generate_prediction
 from app.ai.ensemble import combine, compute_ai_edge, compute_factor_scores
 from app.core.exceptions import NotFoundError
 from app.redis_client import cache
+from app.modules.websocket.manager import manager
 
 
 async def run_prediction_pipeline(
@@ -106,13 +107,16 @@ async def run_prediction_pipeline(
     # Invalidate live predictions cache
     await cache.delete("predictions:live")
 
-    # Publish to WebSocket
-    await cache.publish("predictions", {
-        "type": "new_prediction",
-        "prediction_id": prediction.id,
-        "event_id": event_id,
-        "ai_probability": float(prediction.ai_probability),
-        "confidence": float(prediction.confidence),
-    })
+    # Push to WebSocket subscribers (in-process; no Redis)
+    await manager.broadcast(
+        "predictions",
+        {
+            "type": "new_prediction",
+            "prediction_id": prediction.id,
+            "event_id": event_id,
+            "ai_probability": float(prediction.ai_probability),
+            "confidence": float(prediction.confidence),
+        },
+    )
 
     return prediction

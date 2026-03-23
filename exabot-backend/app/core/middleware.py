@@ -40,14 +40,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Sliding window rate limit using Redis — per IP."""
+    """Sliding window rate limit per IP (in-process cache; no Redis)."""
 
     LIMIT = settings.RATE_LIMIT_PER_MINUTE
     WINDOW = 60  # seconds
 
     async def dispatch(self, request: Request, call_next):
-        # Skip rate limiting for health checks
-        if request.url.path in ("/", "/health", "/docs", "/openapi.json"):
+        # Skip rate limiting for health checks & docs
+        p = request.url.path
+        if p in ("/", "/health", "/docs", "/redoc", "/openapi.json") or p.startswith("/docs"):
             return await call_next(request)
 
         ip = request.client.host if request.client else "unknown"
@@ -62,7 +63,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     media_type="application/json",
                 )
         except Exception:
-            pass  # If Redis is down, allow request
+            pass  # If rate-limit store fails, allow request
 
         return await call_next(request)
 

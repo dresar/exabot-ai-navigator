@@ -1,12 +1,13 @@
 """
-PyTorch LSTM temporal prediction model.
-Uses price timeseries to predict market direction.
-Falls back to heuristic when no trained model or no GPU.
+PyTorch LSTM temporal prediction model (optional dependency).
+If PyTorch is not installed, falls back to heuristic only.
 """
 import os
-import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, TYPE_CHECKING
 import numpy as np
+
+if TYPE_CHECKING:
+    import torch.nn as nn
 
 
 class LSTMModel:
@@ -19,12 +20,15 @@ class LSTMModel:
         self._load_model()
 
     def _load_model(self):
+        try:
+            import torch
+        except ImportError:
+            return
         if not os.path.exists(self.MODEL_PATH):
             return
         try:
-            import torch
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
-            self._model = torch.load(self.MODEL_PATH, map_location=self._device)
+            self._model = torch.load(self.MODEL_PATH, map_location=self._device, weights_only=False)
             self._model.eval()
         except Exception:
             self._model = None
@@ -44,7 +48,8 @@ class LSTMModel:
 
     def _torch_predict(self, prices: List[float]) -> float:
         import torch
-        seq = np.array(prices[-self.SEQ_LEN:], dtype=np.float32)
+
+        seq = np.array(prices[-self.SEQ_LEN :], dtype=np.float32)
         seq = (seq - seq.mean()) / (seq.std() + 1e-8)
         tensor = torch.FloatTensor(seq).unsqueeze(0).unsqueeze(-1).to(self._device)
         with torch.no_grad():
@@ -55,16 +60,25 @@ class LSTMModel:
     def _heuristic_predict(self, prices: List[float]) -> float:
         if len(prices) < 2:
             return 0.5
-        recent = prices[-min(7, len(prices)):]
+        recent = prices[-min(7, len(prices)) :]
         trend = (recent[-1] - recent[0]) / (recent[0] + 1e-8)
         prob = 0.5 + trend * 2
         return max(0.05, min(0.95, prob))
 
-    def train(self, sequences: np.ndarray, labels: np.ndarray, epochs: int = 50) -> List[Dict]:
-        """Train and persist model. Returns epoch history."""
+    def train(self, sequences: np.ndarray, labels: np.ndarray, epochs: int = 50) -> List[Dict[str, Any]]:
         import torch
         import torch.nn as nn
         from torch.utils.data import DataLoader, TensorDataset
+
+        class _LSTMNet(nn.Module):
+            def __init__(self, input_size: int, hidden_size: int, num_layers: int):
+                super().__init__()
+                self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+                self.fc = nn.Linear(hidden_size, 1)
+
+            def forward(self, x):
+                out, _ = self.lstm(x)
+                return self.fc(out[:, -1, :])
 
         X = torch.FloatTensor(sequences)
         y = torch.FloatTensor(labels)
@@ -92,27 +106,18 @@ class LSTMModel:
                 preds = (torch.sigmoid(model(X.unsqueeze(-1))).squeeze() > 0.5).float()
                 acc = float((preds == y).float().mean())
 
-            history.append({"epoch": epoch + 1, "accuracy": round(acc * 100, 2), "loss": round(total_loss / len(loader), 6)})
+            history.append(
+                {
+                    "epoch": epoch + 1,
+                    "accuracy": round(acc * 100, 2),
+                    "loss": round(total_loss / max(len(loader), 1), 6),
+                }
+            )
 
         os.makedirs("models", exist_ok=True)
         torch.save(model, self.MODEL_PATH)
         self._model = model
         return history
-
-
-class _LSTMNet:
-    """Minimal LSTM for binary classification."""
-    def __init__(self, input_size, hidden_size, num_layers):
-        import torch.nn as nn
-        import torch
-        super().__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 1)
-
-    def forward(self, x):
-        import torch
-        out, _ = self.lstm(x)
-        return self.fc(out[:, -1, :])
 
 
 lstm_model = LSTMModel()

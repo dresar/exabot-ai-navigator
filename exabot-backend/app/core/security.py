@@ -3,20 +3,31 @@ from typing import Optional
 import hashlib
 import secrets
 
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from app.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 
 def hash_password(plain: str) -> str:
-    return pwd_context.hash(plain)
+    """Bcrypt hash (direct `bcrypt` — avoids passlib vs bcrypt 4.x breakage on Python 3.14)."""
+    pw = plain.encode("utf-8")
+    if len(pw) > 72:
+        pw = pw[:72]
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(pw, salt).decode("ascii")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    if not plain or not hashed:
+        return False
+    try:
+        return bcrypt.checkpw(
+            plain.encode("utf-8"),
+            hashed.encode("ascii"),
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 def create_access_token(subject: str, extra: Optional[dict] = None) -> str:

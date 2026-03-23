@@ -4,7 +4,11 @@ import {
   HelpCircle, Activity, ChevronRight, Zap, User, LogOut, Crown
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/api";
+import { logoutRequest } from "@/lib/auth";
+import { useCurrentUser } from "@/hooks/useCurrentUser";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar,
@@ -32,9 +36,9 @@ const aiMenuItems = [
   { title: "API Key", url: "/api-key", icon: Key },
 ];
 
-const systemMenuItems = [
+const systemMenuItemsBase = [
   { title: "Log Aktivitas", url: "/log", icon: ScrollText },
-  { title: "Notifikasi", url: "/notifikasi", icon: Bell, badge: "3" },
+  { title: "Notifikasi", url: "/notifikasi", icon: Bell, badge: undefined as string | undefined },
   { title: "Pengaturan", url: "/pengaturan", icon: Settings },
   { title: "Dokumentasi", url: "/dokumentasi", icon: BookOpen },
   { title: "Bantuan", url: "/bantuan", icon: HelpCircle },
@@ -129,6 +133,21 @@ function MenuGroup({ label, items, collapsed }: { label: string; items: typeof c
 export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
+  const navigate = useNavigate();
+  const { data: me } = useCurrentUser();
+  const { data: notifs } = useQuery({
+    queryKey: ["notifications", "header"],
+    queryFn: () => apiFetch<Array<{ is_read: boolean }>>("/notifications"),
+  });
+  const unread = (notifs ?? []).filter((n) => !n.is_read).length;
+  const systemMenuItems = systemMenuItemsBase.map((it) =>
+    it.title === "Notifikasi" && unread > 0 ? { ...it, badge: String(unread) } : { ...it }
+  );
+
+  const logout = async () => {
+    await logoutRequest();
+    navigate("/login");
+  };
 
   return (
     <Sidebar collapsible="icon" className="border-r border-sidebar-border bg-sidebar glass-sidebar">
@@ -155,8 +174,8 @@ export function AppSidebar() {
             <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-primary/8 border border-primary/15">
               <Crown className="w-3.5 h-3.5 text-warning shrink-0" />
               <div className="min-w-0">
-                <div className="text-[10px] font-semibold text-primary">Pro Plan</div>
-                <div className="text-[10px] text-muted-foreground">v2.4.1 • Aktif</div>
+                <div className="text-[10px] font-semibold text-primary">{me?.plan ?? "Pro"} Plan</div>
+                <div className="text-[10px] text-muted-foreground">Aktif</div>
               </div>
               <ChevronRight className="w-3 h-3 text-muted-foreground ml-auto shrink-0" />
             </div>
@@ -173,16 +192,20 @@ export function AppSidebar() {
 
         {/* User Profile */}
         {!collapsed && (
-          <div className="mx-2 mt-2 p-3 rounded-xl border border-sidebar-border/50 bg-sidebar-accent/50 flex items-center gap-2.5 group cursor-pointer hover:bg-sidebar-accent transition-colors">
+          <button
+            type="button"
+            onClick={logout}
+            className="mx-2 mt-2 p-3 rounded-xl border border-sidebar-border/50 bg-sidebar-accent/50 flex items-center gap-2.5 group cursor-pointer hover:bg-sidebar-accent transition-colors w-[calc(100%-1rem)] text-left"
+          >
             <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shrink-0">
               <User className="w-4 h-4 text-white" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-xs font-semibold truncate">Ahmad Fadhil</div>
-              <div className="text-[10px] text-muted-foreground truncate">fadhil@exabot.ai</div>
+              <div className="text-xs font-semibold truncate">{me?.username ?? "…"}</div>
+              <div className="text-[10px] text-muted-foreground truncate">{me?.email ?? ""}</div>
             </div>
             <LogOut className="w-3.5 h-3.5 text-muted-foreground shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-          </div>
+          </button>
         )}
       </SidebarContent>
     </Sidebar>
